@@ -7,13 +7,14 @@ def u_real(x):
     # return np.exp(-x) * np.cos(2 * x)
 
 def u0(x):
-    return np.zeros_like(x)  # Suposición inicial
+    #return 0.5*(1 - np.exp(-2 * x)) # Suposición inicial
+    return x
 
 def first_integrand(t, u):
     return u(t)
 
 def second_integrand(xp, u, nodes, weights):  
-    return - 5 * gauss_quadrature(lambda tp: first_integrand(tp, u), 0, xp, nodes, weights)
+    return gauss_quadrature(lambda tp: first_integrand(tp, u), 0, xp, nodes, weights)
 
 def gauss_quadrature(func, a, b, nodes, weights):
     # Transformar nodos al intervalo [a, b]
@@ -24,8 +25,8 @@ def gauss_quadrature(func, a, b, nodes, weights):
 
 # Parámetros
 N = int(1e3)
-t = np.linspace(0, 1, N)
-iterations = 10
+t = np.linspace(0, 3, N)
+iterations = 50
 nodes, weights = np.polynomial.legendre.leggauss(20)
 
 # Inicialización de la función
@@ -37,7 +38,7 @@ while iteration < iterations:
     u_n_inter = interp1d(t, u_n, kind='linear', fill_value='extrapolate')
     for tp in t:
         # Cálculo de la integral usando cuadratura de Gauss
-        integral_rhs = gauss_quadrature(lambda xp: second_integrand(xp, u_n_inter, nodes, weights), 0, tp, nodes, weights)
+        integral_rhs = - 5 * gauss_quadrature(lambda xp: second_integrand(xp, u_n_inter, nodes, weights), 0, tp, nodes, weights)
         integral_lhs = - 2 * gauss_quadrature(lambda xp: first_integrand(xp, u_n_inter), 0, tp, nodes, weights)
         integral = integral_rhs + integral_lhs
         u_new.append(u0(tp) + integral)
