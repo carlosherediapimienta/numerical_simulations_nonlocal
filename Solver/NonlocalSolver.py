@@ -1,12 +1,11 @@
-import numpy as np
 from scipy.integrate import fixed_quad
 from scipy.interpolate import interp1d
 from concurrent.futures import ThreadPoolExecutor
 from numba import njit
-
 from typing import Callable
+import numpy as np
 
-class NonlocalSolver:
+class NonlocalSolverMomentum:
     def __init__(self, f: Callable, dL: Callable, t_span: list, y0: np.array, betas: list,
                  alpha: float, lambda_:float = 0, verbose: bool = True):
         
@@ -18,15 +17,13 @@ class NonlocalSolver:
         self.alpha = alpha
         self.t = np.arange(t_span[0], t_span[1], alpha)
         self.betas = betas
+        self.b = 1/alpha * np.array([1 - betas[0], 1 - betas[1]])
         self.lambda_ = lambda_
-
-        self.k = lambda i, s: np.exp( np.log((1-betas[i-1])/self.alpha) - (1-betas[i-1])*s/self.alpha ) 
+        self.k = lambda i, s: self.b[i-1] * np.exp( - self.b[i-1] * s)
         self.dL = dL
+        self.alpha_t = lambda t: np.sqrt(1-(1-alpha*self.b[1])**(t/alpha)) / (1 - (1-alpha*self.b[0])**(t/alpha))
         
-        self.gamma = lambda t: np.sqrt(1 - self.betas[1] ** t) / (1 - self.betas[0] ** t)
         self.epsilon = 1e-8
-
-        self.hat_epsilon = lambda t: np.sqrt(1 - self.betas[1] ** t) * self.epsilon
 
         self.smoothing_factor = 0.5
         self.smoothing_factor_max = 0.9999
@@ -37,13 +34,14 @@ class NonlocalSolver:
         self.global_error_tolerance = 1e-4
         self.verbose = verbose
 
+
     def __initial_solution__(self) -> np.array:
         return self.__solve_ode__(self.f)
     
     def __solve_ode__(self, rhs_ode: Callable) -> np.array:
         t_values = self.t
         y_values = np.zeros(t_values.shape)
-        y_values[0] = self.y0
+        y_values[0] = self.y0.item() if isinstance(self.y0, np.ndarray) else self.y0
         for i in range(1, len(t_values)):
             y_values[i] = y_values[i - 1] + self.alpha * rhs_ode(t_values[i - 1], y_values[i - 1])
         return y_values
@@ -51,29 +49,38 @@ class NonlocalSolver:
     def __rhs_with_integral_part__(self, y: np.array) -> np.array:
         y_interpolated = interp1d(self.t, y, kind='cubic', fill_value="extrapolate", assume_sorted=True)
 
+        self.m = []
+        self.v = []
+
         def integral(t):
             def integrand(i, tp):
-                k_value = self.k(i, tp)
-                df_value = self.dL(y_interpolated(t - tp))
-                common_term = df_value + 0.5 * self.lambda_ * y_interpolated(t - tp)
+                k_value = self.k(i, t - tp)
+                df_value = self.dL(y_interpolated(tp))
+                common_term = df_value + 0.5 * self.lambda_ * y_interpolated(tp)
                 return k_value * common_term if i == 1 else k_value * (common_term ** 2)
             
             numerador_func = lambda tp: integrand(1, tp)
             denominador_func = lambda tp: integrand(2, tp)
 
             with ThreadPoolExecutor() as executor:
-                future_numerator = executor.submit(fixed_quad, numerador_func, 0, t, n=int(1e2))
-                future_denominator = executor.submit(fixed_quad, denominador_func, 0, t, n=int(1e2))
+                future_numerator = executor.submit(fixed_quad, numerador_func, 0, t, n=int(1e3))
+                future_denominator = executor.submit(fixed_quad, denominador_func, 0, t, n=int(1e3))
 
                 value_numerator, _ = future_numerator.result()
                 value_denominator, _ = future_denominator.result()
 
-            value_denominator = np.sqrt(value_denominator) + self.hat_epsilon(t)
-            return np.array(value_numerator / value_denominator)
+            v_value = value_denominator
+            v_sqrt_value = np.sqrt(v_value) 
+            m_value = value_numerator
+
+            self.m.append((t, m_value))
+            self.v.append((t, v_value))   
+
+            return m_value / (v_sqrt_value + self.epsilon)
 
         def rhs(t, y):
-            return self.f(t, y_interpolated(t)) - self.gamma(t) * integral(t)
-
+            return self.f(t, y_interpolated(t)) - self.alpha_t(t) * integral(t)
+                
         return self.__solve_ode__(rhs)
     
     @staticmethod
@@ -134,4 +141,4 @@ class NonlocalSolver:
         self.y = y_guess
         self.global_error = current_error
 
-        return self.t, self.y           
+        return self.t, self.y   

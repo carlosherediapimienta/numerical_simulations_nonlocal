@@ -1,8 +1,9 @@
 import numpy as np
 from typing import Callable
 
-class Adam:
-    def __init__(self, dL:Callable, lr:float=0.001, beta1:float=0.9, beta2:float=0.999, epsilon:float=1e-8, weight_decay: float = 0, lambda_l2: float = 0, epochs: int = 1000):
+class AdamMomentum:
+    def __init__(self, dL:Callable, lr:float=0.001, beta1:float=0.9, beta2:float=0.999, epsilon:float=1e-8, 
+                 weight_decay: float = 0, lambda_l2: float = 0, epochs: int = 1000):
         self.lr = lr
         self.beta1 = beta1
         self.beta2 = beta2
@@ -15,7 +16,9 @@ class Adam:
         self.iteration = 1
         self.epochs = epochs
         self.global_error_tolerance = 1e-5
-        self.theta_result = [] 
+        self.theta_result = []
+        self.m_result = []
+        self.v_result = []
 
     def __global_error__(self, theta_new: float , theta_old: float) -> float:
             diff = theta_new - theta_old
@@ -27,6 +30,8 @@ class Adam:
         while self.iteration <= self.epochs:
             
             self.theta_result.append(theta)
+            self.m_result.append(self.m)
+            self.v_result.append(self.v)
 
             theta_old = theta
             dL_value = self.dL(theta)
@@ -55,4 +60,4 @@ class Adam:
 
         print(f'Last epoch: {self.iteration}, Error: {global_error}.')
 
-        return self.theta_result, self.iteration
+        return self.theta_result, self.m_result, self.v_result, self.iteration
