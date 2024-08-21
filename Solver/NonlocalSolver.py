@@ -1,7 +1,6 @@
 from scipy.integrate import fixed_quad
 from scipy.interpolate import interp1d
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import ProcessPoolExecutor
 from numba import njit
 from typing import Callable
 import numpy as np
@@ -143,10 +142,9 @@ class NonlocalSolverMomentum:
 
         return self.t, self.y   
     
-
 class NonlocalSolverMomentum2ndOrder:
     def __init__(self, f: Callable, dL: Callable, t_span: list, y0: np.array, dy0: np.array, betas: list,
-                 alpha: float, omega: float, lambda_:float = 0, verbose: bool = True):
+                 alpha: float, omega:float = 0, lambda_:float = 0, verbose: bool = True):
         
         np.random.seed(33)
 
@@ -158,68 +156,73 @@ class NonlocalSolverMomentum2ndOrder:
         self.omega = omega
         self.t = np.arange(t_span[0], t_span[1], alpha)
         self.betas = betas
-        self.b = 1/alpha * np.array([1 - betas[0], 1 - betas[1]])
         self.lambda_ = lambda_
         self.dL = dL
-        self.alpha_t = lambda t: np.sqrt(1-self.betas[1]**(t/alpha)) / (1 - self.betas[0]**(t/alpha))
+        self.alpha_t = lambda t: 2 * np.sqrt((1-betas[1]**(t/alpha)) / alpha) / ( alpha * (1 - betas[0]**(t/alpha)))
         
-        self.epsilon = 1e-8
+        self.epsilon_t = lambda t: np.sqrt((1-betas[1]**(t/alpha)) / alpha) * 1e-8
 
         self.smoothing_factor = 0.5
         self.smoothing_factor_max = 0.9999
         self.increments = np.linspace(self.smoothing_factor, self.smoothing_factor_max, num=int(1e2))
         self.max_value_index = False
 
-        self.max_iteration = int(1e10)
+        self.max_iteration = 600
         self.global_error_tolerance = 1e-4
         self.verbose = verbose
 
 
-        def __k__(self, s: float, i: int) -> float:
+    def __k__(self, i: int, s: float) -> float:
+        exp_term = np.exp(-s / self.alpha)
+        
+        if np.all(exp_term == 0.0):
+            return 0.0
+        
+        beta_value = self.betas[i - 1]
+        if beta_value == 0.5:
+            return (s / self.alpha) * exp_term
+        
+        sqrt_term = np.sqrt(abs(2 * beta_value - 1))
+        arg_term = sqrt_term / self.alpha * s
+        
+        if beta_value > 0.5:
+            sinh_value = np.sinh(arg_term)
+            return (2 * (1 - beta_value)) / sqrt_term * exp_term * sinh_value
+        
+        # Caso beta_value < 0.5
+        return (2 * (1 - beta_value)) / sqrt_term * exp_term * np.sin(arg_term)
 
-            exp_term = np.exp(- s / self.alpha)
-            beta_value = self.betas[i - 1]
-
-            if np.all(exp_term != 0.0):
-                if beta_value == 0.5:
-                    return 2 * s * exp_term
-                elif beta_value > 0.5:
-                    sqrt_term = np.sqrt(2 * beta_value - 1)
-                    sinh_value = np.sinh(sqrt_term / self.alpha * s)
-                    if np.any(np.isinf(sinh_value)):
-                        log_exp_term = np.log(exp_term)
-                        sinh_arg = sqrt_term / self.alpha * s
-                        log_sinh_term = sinh_arg - np.log(2)
-                        log_values = log_exp_term + log_sinh_term
-                        return (2 * self.alpha) / sqrt_term * np.exp(log_values)
-                    else:
-                        return (2 * self.alpha) / sqrt_term * exp_term * np.sinh(sqrt_term / self.alpha * s)
-                else:
-                    sqrt_term = np.sqrt(1 - 2 * beta_value)
-                    return (2 * self.alpha) / sqrt_term * exp_term * np.sin(sqrt_term / self.alpha * s)
-            else:
-                return 0.0
-
-    def __initial_solution__(self) -> np.array:
-        return self.__solve_ode__(self.f)
-    
-    def __solve_ode__(self, rhs_ode: Callable) -> np.array:
-        t_values = self.t
-        y_values = np.zeros((len(t_values), 2)) 
-        y_values[0, 0] = self.y0
-        y_values[0, 1] = self.dy0  
-        for i in range(1, len(t_values)):
-            y_values[i] = y_values[i - 1] + self.alpha * rhs_ode(t_values[i - 1], y_values[i - 1])
-        return y_values
-    
+        
     def __rhs_system__(self, t, y_vec):
         y1, y2 = y_vec
         dy1 = y2
-        dy2 = - (2 / self.alpha) * (y2 + (self.omega / self.alpha) * y1)
+        dy2 =  (2 / self.alpha) * (y2 + (self.omega / self.alpha) * y1)
         return np.array([dy1, dy2])
     
+    def __initial_solution__(self) -> np.array:
+        return self.__solve_ode__(self.__rhs_system__)
+       
+    def __solve_ode__(self, rhs_ode: Callable) -> np.array:
+        t_values = self.t
+        n = len(t_values)
+        y_values = np.zeros((n, 2)) 
+        
+        # Inicialización de valores iniciales
+        y_values[0, 0] = self.y0.item() if isinstance(self.y0, np.ndarray) else self.y0
+        y_values[0, 1] = self.dy0.item() if isinstance(self.dy0, np.ndarray) else self.dy0   
+        
+        # Integración a lo largo del tiempo
+        for i in range(1, n):
+            dy = rhs_ode(t_values[i - 1], y_values[i - 1])
+            y_values[i] = y_values[i - 1] + self.alpha * dy
+        
+        return y_values
+          
     def __rhs_with_integral_part__(self, y: np.array) -> np.array:
         y_interpolated = interp1d(self.t, y[:, 0], kind='cubic', fill_value="extrapolate", assume_sorted=True)
+
+        dy_dt = np.gradient(y_interpolated(self.t), self.t)  
+        dy_interpolated = interp1d(self.t, dy_dt, kind='cubic', fill_value="extrapolate", assume_sorted=True)
 
         self.m = []
         self.v = []
@@ -234,7 +237,7 @@ class NonlocalSolverMomentum2ndOrder:
             numerador_func = lambda tp: integrand(1, tp)
             denominador_func = lambda tp: integrand(2, tp)
 
-            with ProcessPoolExecutor() as executor:
+            with ThreadPoolExecutor() as executor:
                 future_numerator = executor.submit(fixed_quad, numerador_func, 0, t, n=int(1e3))
                 future_denominator = executor.submit(fixed_quad, denominador_func, 0, t, n=int(1e3))
 
@@ -248,11 +251,11 @@ class NonlocalSolverMomentum2ndOrder:
             self.m.append((t, m_value))
             self.v.append((t, v_value))   
 
-            return m_value / (v_sqrt_value + self.epsilon)
+            return m_value / (v_sqrt_value + self.epsilon_t(t))
 
         def rhs(t, y):
-            y_vec = np.array([y_interpolated(t), np.gradient(y_interpolated(self.t))[np.where(self.t == t)][0]])
-            return self.__rhs_system__(t, y_vec) - self.alpha_t(t) * integral(t)
+            y_vec = np.array([y_interpolated(t), dy_interpolated(t)])
+            return self.__rhs_system__(t, y_vec) + self.alpha_t(t) * integral(t)
                 
         return self.__solve_ode__(rhs)
     
