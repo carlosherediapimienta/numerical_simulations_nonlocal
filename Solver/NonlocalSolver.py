@@ -80,6 +80,8 @@ class NonlocalSolverMomentumAdam:
 
         self.m = []  # Stores m(t) values.
         self.v = []  # Stores v(t) values.
+        self.m.append((0, 0))
+        self.v.append((0, 0))
 
         def integral(t):
             """
@@ -291,6 +293,7 @@ class NonlocalSolverMomentumRMSProp:
         y_interpolated = interp1d(self.t, y, kind='cubic', fill_value="extrapolate", assume_sorted=True)
 
         self.v = []
+        self.v.append((0, 0))
 
         def integral(t):
             """
@@ -500,6 +503,7 @@ class NonlocalSolverAdaGrad:
         y_interpolated = interp1d(self.t, y, kind='cubic', fill_value="extrapolate", assume_sorted=True)
 
         self.v = []
+        self.v.append((0, 0))
 
         def integral(t):
             """

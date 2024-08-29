@@ -1,6 +1,6 @@
 # Collaboration with Dr. Hidenori Tanaka
 
-This repository is a collaboration with Dr. Hidenori Tanaka from Harvard University and is associated with the article _"Modeling AdaGrad, RMSProp, and Adam with Integro-Differential Equations"_. The main focus of this project is to study the dynamics of these optimization algorithms as nonlocal models.
+This repository is a collaboration with Dr. Hidenori Tanaka from Harvard University and is associated with the article _"Modeling AdaGrad, RMSProp, and Adam with Integro-Differential Equations"_. The primary aim of this project is to study the dynamics of these optimization algorithms as nonlocal models.
 
 ## Repository Structure
 
@@ -8,6 +8,8 @@ The repository is primarily organized around the `Solver` folder, which contains
 
 1. **`NonLocalSolver.py`**: This file contains the implementations for solving integro-differential equations using IDESolver Method.
 2. **`Solver.py`**: This file includes the algorithms for AdaGrad, Adam, and RMSProp implemented from scratch.
+
+Additionally, the repository includes Jupyter notebooks that reproduce all the results presented in the article, allowing users to explore and verify the findings interactively.
 
 ## Classes Overview
 
@@ -66,6 +68,7 @@ The goal of this repository is to explore and model the dynamics of popular opti
 1. Clone the repository to your local machine.
 2. Navigate to the `Solver` folder.
 3. Run the appropriate Python file (`NonLocalSolver.py` or `Solver.py`) to explore different algorithms and their dynamics.
+4. Open the Jupyter notebooks provided to reproduce the results from the article and gain a deeper understanding of the simulations.
 
 ## License
 
