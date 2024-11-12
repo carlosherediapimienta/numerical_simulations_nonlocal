@@ -1,6 +1,6 @@
-# Collaboration with Dr. Hidenori Tanaka
+# Goal
 
-This repository is a collaboration with Dr. Hidenori Tanaka from Harvard University and is associated with the article _"Modeling AdaGrad, RMSProp, and Adam with Integro-Differential Equations"_. The primary aim of this project is to study the dynamics of these optimization algorithms as nonlocal models.
+This repository is associated with the article _"Modeling AdaGrad, RMSProp, and Adam with Integro-Differential Equations"_. The primary aim of this project is to study the dynamics of these optimization algorithms as nonlocal models.
 
 ## Repository Structure
 
