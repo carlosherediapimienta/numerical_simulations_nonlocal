@@ -1,64 +1,79 @@
 import numpy as np
 from typing import Callable
 
+try:
+    import jax
+    import jax.numpy as jnp
+    device = jax.devices()[0]
+    print(f"[Solver] Usando JAX en: {device.device_kind} ({device.platform})")
+except ImportError:
+    raise ImportError("[Solver] JAX no está instalado. Instálalo para usar este optimizador.")
+
 class AdamMomentum:
-    def __init__(self, dL:Callable, lr:float=0.001, beta1:float=0.9, beta2:float=0.999, epsilon:float=1e-8, 
+    def __init__(self, dL: Callable, lr: float = 0.001, beta1: float = 0.9, beta2: float = 0.999, epsilon: float = 1e-8, 
                  weight_decay: float = 0, lambda_l2: float = 0, epochs: int = 1000):
+
         self.lr = lr
         self.beta1 = beta1
         self.beta2 = beta2
         self.epsilon = epsilon
         self.weight_decay = weight_decay
         self.lambda_l2 = lambda_l2
-        self.m = 0
-        self.v = 0
-        self.dL = dL
-        self.iteration = 1
+        if not hasattr(dL, 'lower'):
+            self.dL = jax.jit(dL)
+        else:
+            self.dL = dL
         self.epochs = epochs
         self.global_error_tolerance = 1e-5
+        self.reset_state()
+
+    def reset_state(self):
+        self.m = 0.0
+        self.v = 0.0
+        self.iteration = 1
         self.theta_result = []
         self.m_result = []
         self.v_result = []
 
-    def __global_error__(self, theta_new: float , theta_old: float) -> float:
-            diff = theta_new - theta_old
-            return np.abs(diff)
+    @staticmethod
+    @jax.jit
+    def __global_error__(theta_new, theta_old):
+        import jax.numpy as jnp
+        diff = theta_new - theta_old
+        return jnp.abs(diff)
 
     def solve(self, theta_initial):
-
-        theta = theta_initial
+        self.reset_state()
+        theta = jnp.array(theta_initial)
         while self.iteration <= self.epochs:
-            
-            self.theta_result.append(theta)
-            self.m_result.append(self.m)
-            self.v_result.append(self.v)
+            self.theta_result.append(float(theta))
+            self.m_result.append(float(self.m))
+            self.v_result.append(float(self.v))
 
             theta_old = theta
             dL_value = self.dL(theta)
-            
             if self.lambda_l2 != 0:
-                dL_value  += self.lambda_l2 / 2 * theta
+                dL_value += self.lambda_l2 / 2 * theta
 
             self.m = self.beta1 * self.m + (1 - self.beta1) * dL_value
             self.v = self.beta2 * self.v + (1 - self.beta2) * (dL_value ** 2)
             m_hat = self.m / (1 - self.beta1 ** self.iteration)
             v_hat = self.v / (1 - self.beta2 ** self.iteration)
-            
-            update = self.lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
-            
+            update = self.lr * m_hat / (jnp.sqrt(v_hat) + self.epsilon)
+
             if self.weight_decay != 0:
                 theta = (1 - self.weight_decay) * theta - update
             else:
                 theta -= update
-            
+
             global_error = self.__global_error__(theta_new=theta, theta_old=theta_old)
 
             if self.iteration % 50 == 0:
-                print(f'Epoch: {self.iteration}, Error: {global_error}.')
+                print(f'Epoch: {self.iteration}, Error: {float(global_error)}.')
 
             self.iteration += 1
 
-        print(f'Last epoch: {self.iteration}, Error: {global_error}.')
+        print(f'Last epoch: {self.iteration-1}, Error: {float(global_error)}.')
 
         return self.theta_result, self.m_result, self.v_result, self.iteration
     
