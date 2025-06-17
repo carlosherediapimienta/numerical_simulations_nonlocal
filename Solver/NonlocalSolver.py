@@ -40,6 +40,7 @@ class NonlocalSolverMomentumAdam:
         self.f = jax.jit(f) if not hasattr(f, "lower") else f
         self.dL = jax.jit(dL) if not hasattr(dL, "lower") else dL
         self.alpha_t = lambda t: jnp.sqrt(1-betas[1]**(t/alpha)) / (1-betas[0]**(t/alpha))  # Time-scaling factor.
+        self.alpha_t = lambda t: jnp.where(t <= 1e-12, 1.0, jnp.sqrt(1 - betas[1] ** (t / alpha)) / (1 - betas[0] ** (t / alpha)))
         self.epsilon_t = lambda t: jnp.sqrt(1-betas[1]**(t/alpha)) * 1e-8  # Regularization term to avoid division by zero.
 
         # Smoothing parameters for the solution algorithm.
@@ -60,7 +61,7 @@ class NonlocalSolverMomentumAdam:
 
         :return: Initial approximate solution for y.
         """
-        return self.__solve_ode__(self.f)
+        return self.__solve_ode__(lambda t, y, idx=None: self.f(t, y))
     
     def __solve_ode__(self, rhs_ode: Callable) -> jnp.ndarray:
         """
@@ -72,15 +73,23 @@ class NonlocalSolverMomentumAdam:
 
         t_values = self.t
         idxs = jnp.arange(len(t_values))
-        y0 = float(self.y0.item()) if isinstance(self.y0, (np.ndarray, jnp.ndarray)) else float(self.y0)
+        if isinstance(self.y0, (np.ndarray, jnp.ndarray)):
+            y0 = float(self.y0.ravel()[0])
+        else:
+            y0 = float(self.y0)
+        
+        args = (t_values[:-1], idxs[:-1])
+        args = jnp.stack(args, axis=1)
 
         def step(y, args):
             t, idx = args
+            idx = jnp.asarray(idx).astype(jnp.int32)
             y_next = y + self.alpha * rhs_ode(t, y, idx)
             return y_next, y_next
 
-        _, y_hist = jax.lax.scan(step, y0, t_values[:-1], idxs[:-1])
+        _, y_hist = jax.lax.scan(step, y0, args)
         y_values = jnp.concatenate([jnp.array([y0]), y_hist])
+       
         return y_values
     
     def __rhs_with_integral_part__(self, y: jnp.ndarray) -> jnp.ndarray:
@@ -102,33 +111,34 @@ class NonlocalSolverMomentumAdam:
 
         y_interp = lambda t: linear_interp_jax(t, self.t, y)
 
-        self.m = []  # Stores m(t) values.
-        self.v = []  # Stores v(t) values.
-        self.m.append((0, 0))
-        self.v.append((0, 0))
-
         @jax.jit
-        def causal_convolution(kernel_fn, g_vals, t_grid, alpha):
+        def causal_convolution(g_vals, t_grid, beta):
+            def kernel_fn(s):
+                return (1 - beta) / self.alpha * jnp.exp(-((1 - beta) / self.alpha) * s)
             dt_mat = jnp.subtract.outer(t_grid, t_grid)
             mask = dt_mat >= 0
             kernel_mat = jnp.where(mask, kernel_fn(dt_mat), 0.0)
-            conv = jnp.dot(kernel_mat, g_vals) * alpha
+            conv = jnp.dot(kernel_mat, g_vals) * self.alpha
             return conv
         
         m_vals = jax.vmap(lambda t: self.dL(y_interp(t)) + 0.5 * self.lambda_ * y_interp(t))(self.t)
         v_vals = jax.vmap(lambda t: (self.dL(y_interp(t)) + 0.5 * self.lambda_ * y_interp(t))**2)(self.t)
-        kernel_fn = lambda s: (1 - self.betas[1]) / self.alpha * jnp.exp(-((1 - self.betas[1]) / self.alpha) * s)
 
-        m_conv = causal_convolution(kernel_fn, m_vals, self.t, self.alpha)
-        v_conv = causal_convolution(kernel_fn, v_vals, self.t, self.alpha)
+        m_conv = causal_convolution(m_vals, self.t, self.betas[0])  # beta1 para m
+        v_conv = causal_convolution(v_vals, self.t, self.betas[1])  # beta2 para v
         v_sqrt = jnp.sqrt(v_conv)
         epsilons = jax.vmap(self.epsilon_t)(self.t)
+        alphas = jax.vmap(self.alpha_t)(self.t)
 
         self.m_conv = m_conv
         self.v_sqrt = v_sqrt
 
         def rhs(t, y, idx):
-            return self.f(t, y_interp(t)) - self.alpha_t(t) * (m_conv[idx] / (v_sqrt[idx] + epsilons[idx]))
+            denom = v_sqrt[idx] + epsilons[idx]
+            y_interp_val = y_interp(t)
+            f_val = self.f(t, y_interp_val)
+            result = f_val - alphas[idx] * (m_conv[idx] / denom)
+            return result
  
         return self.__solve_ode__(rhs)
         
@@ -175,6 +185,13 @@ class NonlocalSolverMomentumAdam:
 
         if self.verbose:
             print(f"Iteration {self.iteration} advanced. Current error: {current_error}.")
+
+        if jnp.isnan(current_error) or jnp.isinf(current_error):
+            print("Error diverged (NaN or Inf) in initial guess. Stopping.")
+            self.y = y_guess
+            self.global_error = current_error
+            print(f'Last iteration: {self.iteration}. Final error: {current_error}')
+            return self.t, self.y
 
         last_error = current_error
         while current_error > self.global_error_tolerance:
