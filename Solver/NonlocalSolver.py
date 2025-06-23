@@ -4,11 +4,13 @@ from typing import Callable
 import numpy as np
 from numba import njit
 
-import jax
-import jax.numpy as jnp
-
 try:
+    import jax
+    import jax.numpy as jnp
+
     device = jax.devices()[0]
+    jax.config.update("jax_enable_x64", True)
+    
     print(f"[NonlocalSolver] Usando JAX en: {device.device_kind} ({device.platform})")
 except Exception:
     raise ImportError("[NonlocalSolver] JAX no está instalado. Instálalo para usar este optimizador.")
@@ -39,7 +41,6 @@ class NonlocalSolverMomentumAdam:
         self.lambda_ = lambda_
         self.f = jax.jit(f) if not hasattr(f, "lower") else f
         self.dL = jax.jit(dL) if not hasattr(dL, "lower") else dL
-        self.alpha_t = lambda t: jnp.sqrt(1-betas[1]**(t/alpha)) / (1-betas[0]**(t/alpha))  # Time-scaling factor.
         self.alpha_t = lambda t: jnp.where(t <= 1e-12, 1.0, jnp.sqrt(1 - betas[1] ** (t / alpha)) / (1 - betas[0] ** (t / alpha)))
         self.epsilon_t = lambda t: jnp.sqrt(1-betas[1]**(t/alpha)) * 1e-8  # Regularization term to avoid division by zero.
 
@@ -100,16 +101,32 @@ class NonlocalSolverMomentumAdam:
         :return: Solution with the integral term applied.
         """
 
-        def linear_interp_jax(x, xp, fp):
-            idx = jnp.clip(jnp.searchsorted(xp, x) - 1, 0, len(fp) - 2)
+        def interp_jax(x, xp, fp):
+            idx = jnp.clip(jnp.searchsorted(xp, x) - 1, 0, len(xp) - 2)
             x0 = xp[idx]
             x1 = xp[idx + 1]
             y0 = fp[idx]
             y1 = fp[idx + 1]
-            slope = (y1 - y0) / (x1 - x0)
-            return y0 + slope * (x - x0)
 
-        y_interp = lambda t: linear_interp_jax(t, self.t, y)
+            # Estimamos derivadas m0, m1 (centradas)
+            def grad(i):
+                i0 = jnp.clip(i - 1, 0, len(fp) - 1)
+                i1 = jnp.clip(i + 1, 0, len(fp) - 1)
+                return (fp[i1] - fp[i0]) / (xp[i1] - xp[i0])
+
+            m0 = grad(idx)
+            m1 = grad(idx + 1)
+
+            h = x1 - x0
+            t = (x - x0) / h
+            h00 = 2 * t**3 - 3 * t**2 + 1
+            h10 = t**3 - 2 * t**2 + t
+            h01 = -2 * t**3 + 3 * t**2
+            h11 = t**3 - t**2
+
+            return h00 * y0 + h10 * h * m0 + h01 * y1 + h11 * h * m1
+                    
+        y_interp = lambda t: interp_jax(t, self.t, y)
 
         @jax.jit
         def causal_convolution(g_vals, t_grid, beta):
@@ -179,8 +196,8 @@ class NonlocalSolverMomentumAdam:
 
         y_current = self.__initial_solution__()
         y_guess = self.__rhs_with_integral_part__(y_current)
-        self.m_conv_history.append(self.m_conv)
-        self.v_sqrt_history.append(self.v_sqrt)
+        self.m_conv_history.append(list(zip(self.t, self.m_conv)))
+        self.v_sqrt_history.append(list(zip(self.t, self.v_sqrt)))
         current_error = self.__global_error__(y_current, y_guess)
 
         if self.verbose:
@@ -198,8 +215,8 @@ class NonlocalSolverMomentumAdam:
             
             y_new = self.__next_y__(self.smoothing_factor, y_current, y_guess)
             y_guess = self.__rhs_with_integral_part__(y_new)
-            self.m_conv_history.append(self.m_conv)
-            self.v_sqrt_history.append(self.v_sqrt)
+            self.m_conv_history.append(list(zip(self.t, self.m_conv)))
+            self.v_sqrt_history.append(list(zip(self.t, self.v_sqrt)))
             current_error = self.__global_error__(y_new, y_guess)
 
             y_current = y_new
@@ -224,7 +241,7 @@ class NonlocalSolverMomentumAdam:
                 self.smoothing_factor = min(self.smoothing_factor_max, next_factor)
             last_error = current_error
 
-            if self.verbose:
+            if self.verbose and self.iteration % 20 == 0:
                 print(f"Iteration {self.iteration} advanced. Current error: {current_error}.")
 
             if self.iteration >= self.max_iteration:
