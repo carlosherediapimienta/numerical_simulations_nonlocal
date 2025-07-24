@@ -72,10 +72,11 @@ class NonlocalSolverMomentumRMSProp(_NonlocalSolverBase):
 
     def _build_stats(self, y):
         interp = self._interp(y)
-        g = jax.vmap(lambda τ:
-                     self.dL(interp(τ)) + 0.5 * self.lambda_ * interp(τ))(self.t)
-        v = _ema(self.beta, g * g)
-        return interp, g, jnp.sqrt(v)
+        g      = jax.vmap(lambda τ: self.dL(interp(τ))
+                        + 0.5 * self.lambda_ * interp(τ))(self.t)
+        v_sqrt = jnp.sqrt(_ema(self.beta, g*g))
+        return (y, g, v_sqrt)          
 
-    def _rhs(self, t, y_prev, idx, interp, g, v_sqrt):
-        return self.f(t, interp(t)) - g[idx] / (v_sqrt[idx] + self.eps)
+    def _rhs(self, t, y_prev, idx, y_fix, g, v_sqrt):
+        y_val = interp1d(t, self.t, y_fix, method="cubic")
+        return self.f(t, y_val) - g[idx] / (v_sqrt[idx] + self.eps)

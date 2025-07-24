@@ -65,13 +65,13 @@ class NonlocalSolverAdaGrad(_NonlocalSolverBase):
         self._alpha_t = lambda τ: 1. / (1. + τ * (self.lr_decay / self.alpha))
 
     def _build_stats(self, y):
-        interp = self._interp(y)                # NO jit  → evita recompilaciones
-        g = jax.vmap(lambda τ:
-                     self.dL(interp(τ)) + 0.5 * self.lambda_ * interp(τ))(self.t)
-        G = jnp.cumsum(g * g)                   # Σ g²  (AdaGrad)
-        return interp, g, jnp.sqrt(G), jax.vmap(self._alpha_t)(self.t)
+        interp = self._interp(y)
+        g      = jax.vmap(lambda τ: self.dL(interp(τ))
+                        + 0.5 * self.lambda_ * interp(τ))(self.t)
+        G_sqrt = jnp.sqrt(jnp.cumsum(g*g))
+        return (y, g, G_sqrt, jax.vmap(self._alpha_t)(self.t))
 
-    def _rhs(self, t, y_prev, idx, interp, g, G_sqrt, a_t):
-        return self.f(t, interp(t)) \
-               - a_t[idx] * g[idx] / (G_sqrt[idx] + self.eps)
+    def _rhs(self, t, y_prev, idx, y_fix, g, G_sqrt, a_t):
+        y_val = interp1d(t, self.t, y_fix, method="cubic")
+        return self.f(t, y_val) - a_t[idx] * g[idx] / (G_sqrt[idx] + self.eps)
     

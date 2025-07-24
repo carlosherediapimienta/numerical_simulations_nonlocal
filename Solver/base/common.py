@@ -3,12 +3,13 @@ Código común a todos los solvers no-locales.
 No se debe instanciar directamente.
 """
 from __future__ import annotations
+from functools import partial
 from typing import Callable, Tuple, Any
 import jax
 import jax.numpy as jnp
 from interpax import interp1d          # pip install interpax
 
-jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)         
 DTYPE = jnp.float64
 
 @jax.jit
@@ -69,21 +70,21 @@ class _NonlocalSolverBase:
 
     # ---------------------------------------------------------------
     @staticmethod
-    @jax.jit
+    @partial(jax.jit, static_argnums=(3,)) 
     def _integrate(alpha: DTYPE,
                    y0: DTYPE,
                    t_vec: jnp.ndarray,
-                   rhs: Callable[[DTYPE, DTYPE, jnp.int32, Tuple[Any, ...]],
-                                 DTYPE],
+                   rhs: Callable[[DTYPE, DTYPE, jnp.int32, Tuple[Any, ...]],DTYPE],
                    stats: Tuple[Any, ...]) -> jnp.ndarray:
         """Euler + lax.scan; una sola compilación para todo el proceso."""
         idxs  = jnp.arange(len(t_vec), dtype=jnp.int32)
         ts_id = jnp.stack((t_vec[:-1], idxs[:-1]), axis=1)
 
         def step(y_prev, args):
-            t, i = args
-            dy = rhs(t, y_prev, i.astype(jnp.int32), *stats)
-            return y_prev + alpha * dy, y_prev
+            t, idx = args
+            idx = idx.astype(jnp.int32) 
+            y_next = y_prev + alpha * rhs(t, y_prev, idx, *stats)
+            return y_next, y_next 
 
         _, hist = jax.lax.scan(step, y0, ts_id)
         return jnp.concatenate([jnp.array([y0], dtype=DTYPE), hist])

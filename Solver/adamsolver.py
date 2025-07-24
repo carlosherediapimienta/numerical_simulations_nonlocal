@@ -2,6 +2,7 @@ import numpy as np
 from typing import Callable
 from typing import Tuple
 import jax.numpy as jnp
+from interpax import interp1d
 from .base.common import _NonlocalSolverBase, _ema, DTYPE
 
 try:
@@ -88,28 +89,22 @@ class NonlocalSolverMomentumAdam(_NonlocalSolverBase):
                  **kw):
         super().__init__(*args, **kw)
         self.beta1, self.beta2 = map(DTYPE, betas)
-        self._alpha_t = lambda t: jnp.where(
-            t <= 1e-12,
-            1.,
-            jnp.sqrt(1 - self.beta2 ** (t / self.alpha)) /
-            (1 - self.beta1 ** (t / self.alpha))
-        )
-        self._eps_t = lambda t: jnp.sqrt(
-            1 - self.beta2 ** (t / self.alpha)) * DTYPE(1e-8)
+        self._alpha_t = lambda t: jnp.where(t <= 1e-12, 1., jnp.sqrt(1 - self.beta2 ** (t / self.alpha)) / (1 - self.beta1 ** (t / self.alpha)))
+        self._eps_t = lambda t: jnp.sqrt(1 - self.beta2 ** (t / self.alpha)) * DTYPE(1e-8)
 
     # ---------- hooks concretos ----------
     def _build_stats(self, y):
         interp = self._interp(y)
-        g = jax.vmap(lambda τ:
-                     self.dL(interp(τ)) + 0.5 * self.lambda_ * interp(τ))(self.t)
+        g = jax.vmap(lambda t: self.dL(interp(t)) + 0.5 * self.lambda_ * interp(t))(self.t)
         m = _ema(self.beta1, g)
-        v = _ema(self.beta2, g * g)
-        return (interp, m, jnp.sqrt(v),
-                jax.vmap(self._alpha_t)(self.t),
-                jax.vmap(self._eps_t)(self.t))
+        v = _ema(self.beta2, g**2)
+        v_sqrt  = jnp.sqrt(v)
+        self._last_m = jnp.stack((self.t, m), axis=1)      
+        self._last_v = jnp.stack((self.t, v), axis=1)  
+        return (y, m, v_sqrt, jax.vmap(self._alpha_t)(self.t), jax.vmap(self._eps_t)(self.t))
 
-    def _rhs(self, t, y_prev, idx,
-             interp, m, v_sqrt, a_t, eps_t):
+    def _rhs(self, t, y_prev, idx, y_fix, m, v_sqrt, a_t, eps_t):
+        y_val = interp1d(t, self.t, y_fix, method="cubic")
         denom = v_sqrt[idx] + eps_t[idx]
-        return self.f(t, interp(t)) - a_t[idx] * (m[idx] / denom)
+        return self.f(t, y_val) - a_t[idx] * (m[idx] / denom)
     
