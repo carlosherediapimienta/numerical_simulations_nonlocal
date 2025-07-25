@@ -1,9 +1,10 @@
 import numpy as np
 from typing import Callable
 from typing import Tuple
+from jax import lax
 import jax.numpy as jnp
 from interpax import interp1d
-from .base.common import _NonlocalSolverBase, _ema, DTYPE
+from .base.common import _NonlocalSolverBase, DTYPE, fixed_quad_jax
 
 try:
     import jax
@@ -84,27 +85,93 @@ class AdamMomentum:
 
     
 class NonlocalSolverMomentumAdam(_NonlocalSolverBase):
+    """
+    θ̇(t) = -α(t) · m̄(t) / ( √v̄(t) + ε(t) )
+    con   m̄, v̄  dados por los núcleos exponenciales K₁, K₂
+          Kₐ(t) = (1-βₐ)/α · e^{-(1-βₐ) t / α},     a = 1,2.
+    """
     def __init__(self, *args,
                  betas: Tuple[float, float] = (0.9, 0.999),
+                 eps_base: float = 1e-8,
                  **kw):
         super().__init__(*args, **kw)
         self.beta1, self.beta2 = map(DTYPE, betas)
-        self._alpha_t = lambda t: jnp.where(t <= 1e-12, 1., jnp.sqrt(1 - self.beta2 ** (t / self.alpha)) / (1 - self.beta1 ** (t / self.alpha)))
-        self._eps_t = lambda t: jnp.sqrt(1 - self.beta2 ** (t / self.alpha)) * DTYPE(1e-8)
+        self.eps_base = DTYPE(eps_base)
 
-    # ---------- hooks concretos ----------
+        # Factores de corrección (5)-(6) de la proposición
+        self._alpha_t = lambda t: jnp.where(
+            t <= 1e-12,
+            1.,
+            jnp.sqrt(1. - self.beta2 ** (t / self.alpha)) / (1. - self.beta1 ** (t / self.alpha))
+        )
+        self._eps_t = lambda t: jnp.where(
+            t <= 1e-12,
+            self.eps_base,                                   
+            self.eps_base * jnp.sqrt(1. - self.beta2 ** (t / self.alpha))
+        )
+
+        # --- pre-cálculo de matrices de pesos ---
+        dt        = self.t[:, None] - self.t[None, :]    # t_i - t_j
+        self._tri = dt >= 0                              # máscara causal
+
+        self.lam1 = (1. - self.beta1) / self.alpha       # λ₁ = (1-β₁)/α
+        self.lam2 = (1. - self.beta2) / self.alpha       # λ₂ = (1-β₂)/α
+
+        # e^{-λ (t_i - t_j)}  (máscara causal se aplica en _build_stats)
+        self._exp1 = jnp.exp(-self.lam1 * dt)
+        self._exp2 = jnp.exp(-self.lam2 * dt)
+
+
+    # ------------------------------------------------------------------
     def _build_stats(self, y):
-        interp = self._interp(y)
-        g = jax.vmap(lambda t: self.dL(interp(t)) + 0.5 * self.lambda_ * interp(t))(self.t)
-        m = _ema(self.beta1, g)
-        v = _ema(self.beta2, g**2)
-        v_sqrt  = jnp.sqrt(v)
-        self._last_m = jnp.stack((self.t, m), axis=1)      
-        self._last_v = jnp.stack((self.t, v), axis=1)  
-        return (y, m, v_sqrt, jax.vmap(self._alpha_t)(self.t), jax.vmap(self._eps_t)(self.t))
+        if self.verbose:
+            jax.debug.print("¿NaNs en y?: {}", jnp.isnan(y).any())
 
+        interp = self._interp(y)
+        lam1 = (1. - self.beta1) / self.alpha
+        lam2 = (1. - self.beta2) / self.alpha
+        nGL  = int(1e3)
+
+        def g_fun(tau):
+            return self.dL(interp(tau)) + 0.5*self.lambda_ * interp(tau)
+        
+        @jax.jit
+        def _moments_single(t,lam):
+            def _compute(_t):
+                ker = lambda tau: jnp.exp(-lam * (_t - tau))
+                f_m = lambda tau: lam * ker(tau) * g_fun(tau)
+                f_v = lambda tau: lam * ker(tau) * g_fun(tau)**2
+                m_k = fixed_quad_jax(f_m, 1e-12, _t, nGL, verbose=self.verbose)
+                v_k = fixed_quad_jax(f_v, 1e-12, _t, nGL, verbose=self.verbose)
+                if self.verbose:
+                    jax.debug.print("step values → nGL ={}  t={}  m={}  v={}", nGL, t, m_k, v_k)
+                return m_k, v_k
+            return lax.cond(t < 1e-12, lambda _: (DTYPE(0.), DTYPE(0.)), _compute, t)
+
+        # vectorizado sobre la malla
+        m = jax.vmap(lambda t: _moments_single(t,lam1)[0])(self.t)
+        v = jax.vmap(lambda t: _moments_single(t,lam2)[1])(self.t)
+
+        if self.verbose:                             
+            # imprime 3 primeros y el último punto como muestra
+            jax.debug.print("m[0]={:.3e}, v[0]={:.3e}", m[0], v[0])
+            jax.debug.print("m[1]={:.3e}, v[1]={:.3e}", m[1], v[1])
+            jax.debug.print("m[-1]={:.3e}, v[-1]={:.3e}", m[-1], v[-1])
+
+        self._last_m = jnp.stack((self.t, m), axis=1)
+        self._last_v = jnp.stack((self.t, v), axis=1)
+
+        v_sqrt = jnp.sqrt(v)
+        a_t    = jax.vmap(self._alpha_t)(self.t)
+        eps_t  = jax.vmap(self._eps_t)(self.t)
+
+        return (y, m, v_sqrt, a_t, eps_t)
+
+    # ------------------------------------------------------------------
     def _rhs(self, t, y_prev, idx, y_fix, m, v_sqrt, a_t, eps_t):
-        y_val = interp1d(t, self.t, y_fix, method="cubic")
+        """
+        θ̇_i(t) = - α(t) * m_i(t) / ( √v_i(t) + ε(t) )
+        """
+        y_val = interp1d(t, self.t, y_fix, method="cubic", extrap=True)
         denom = v_sqrt[idx] + eps_t[idx]
         return self.f(t, y_val) - a_t[idx] * (m[idx] / denom)
-    

@@ -62,16 +62,27 @@ class NonlocalSolverAdaGrad(_NonlocalSolverBase):
         super().__init__(*args, **kw)
         self.lr_decay = DTYPE(lr_decay)
         self.eps      = DTYPE(1e-8)
-        self._alpha_t = lambda τ: 1. / (1. + τ * (self.lr_decay / self.alpha))
+        self._alpha_t = lambda t: 1. / (1. + t * (self.lr_decay / self.alpha))
 
     def _build_stats(self, y):
         interp = self._interp(y)
-        g      = jax.vmap(lambda τ: self.dL(interp(τ))
-                        + 0.5 * self.lambda_ * interp(τ))(self.t)
-        G_sqrt = jnp.sqrt(jnp.cumsum(g*g))
+        g      = jax.vmap(lambda t: self.dL(interp(τ)) + 0.5 * self.lambda_ * interp(t))(self.t)
+        G       = jnp.cumsum(g**2)
+
+        G_shift = jnp.concatenate([G[1:], G[-1:]]) # último valor repetido
+        G_sqrt  = jnp.sqrt(G_shift)
+
+        a_t = jax.vmap(self._alpha_t)(self.t)
+
+        self._last_G = jnp.stack((self.t, G), axis=1) 
+
         return (y, g, G_sqrt, jax.vmap(self._alpha_t)(self.t))
 
     def _rhs(self, t, y_prev, idx, y_fix, g, G_sqrt, a_t):
+        """
+        θ̇(t) = - α(t) · g(t) / ( √G(t+α) + ε )
+        """
         y_val = interp1d(t, self.t, y_fix, method="cubic")
-        return self.f(t, y_val) - a_t[idx] * g[idx] / (G_sqrt[idx] + self.eps)
+        denom = G_sqrt[idx] + self.eps
+        return self.f(t, y_val) - a_t[idx] * g[idx] / denom
     

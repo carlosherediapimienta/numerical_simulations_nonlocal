@@ -5,22 +5,42 @@ No se debe instanciar directamente.
 from __future__ import annotations
 from functools import partial
 from typing import Callable, Tuple, Any
-import jax
-import jax.numpy as jnp
-from interpax import interp1d          # pip install interpax
+import jax, jax.numpy as jnp
+from jax import lax
+from interpax import interp1d         
+import numpy as _npx  
 
 jax.config.update("jax_enable_x64", True)         
 DTYPE = jnp.float64
 
-@jax.jit
-def _ema(beta: DTYPE, seq: jnp.ndarray) -> jnp.ndarray:
-    """Exponential Moving Average vectorizado (una única compilación)."""
-    def body(prev, x):
-        new = beta * prev + (1. - beta) * x
-        return new, new
-    _, out = jax.lax.scan(body, DTYPE(0.), seq)
-    return out
+_GL_CACHE = {n: tuple(map(jnp.asarray, _npx.polynomial.legendre.leggauss(n))) for n in range(2, int(1e3))}
 
+def fixed_quad_jax(fun, a, b, n, *, verbose=False, tol=1e-12):
+    """
+    Gauss–Legendre de orden n (n<=10).
+    Acepta a,b escalares  o  vectores broadcast-compatibles.
+    """
+    try:
+        xg, wg = _GL_CACHE[n]
+    except KeyError:
+        xg, wg = map(jnp.asarray, _npx.polynomial.legendre.leggauss(n))
+
+    a_arr = jnp.reshape(a, (-1,))          # ()  -> (1,)
+    b_arr = jnp.reshape(b, (-1,))          # idem
+
+    def _int(lo, hi):
+        sign = jnp.where(hi < lo, -1., 1.)
+        lo,  hi = jnp.minimum(lo, hi), jnp.maximum(lo, hi)
+        mid  = 0.5 * (hi + lo)
+        half = 0.5 * (hi - lo)
+        pts  = mid + half * xg
+        vals = jax.vmap(fun)(pts)
+        res  = sign * half * jnp.sum(wg * vals, axis=0)
+        if verbose:                       
+            jax.debug.print("fixed_quad: a={} b={}  res={}", a, b, res)
+        return jnp.where(jnp.abs(hi-lo) < tol, 0., res)
+    res = jax.vmap(_int)(a_arr, b_arr)
+    return res[0] if jnp.ndim(a) == 0 else res
 
 class _NonlocalSolverBase:
     """
@@ -39,7 +59,7 @@ class _NonlocalSolverBase:
                  y0,
                  alpha: float,
                  lambda_: float = 0.,
-                 verbose: bool = True):
+                 verbose: bool = False):
 
         self.f  = jax.jit(f)  if not hasattr(f, "lower") else f
         self.dL = jax.jit(dL) if not hasattr(dL, "lower") else dL
@@ -66,7 +86,7 @@ class _NonlocalSolverBase:
     # ---------- helpers -------------------------------------------------
     def _interp(self, y: jnp.ndarray):
         """Interpolador cúbico – no se jittea (evita recompilaciones)."""
-        return lambda τ: interp1d(τ, self.t, y, method="cubic")
+        return lambda t: interp1d(t, self.t, y, method="cubic", extrap=True)
 
     # ---------------------------------------------------------------
     @staticmethod
@@ -153,7 +173,7 @@ class _NonlocalSolverBase:
             y_cur = y_relax
             self.iteration += 1
 
-            if self.iteration % 20 == 0 and self.verbose:
+            if self.iteration % 20 == 0:
                 print(f"Iter {self.iteration} – err {err}")
 
             if self.iteration >= self.max_iteration:

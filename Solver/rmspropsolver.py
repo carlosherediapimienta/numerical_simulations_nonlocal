@@ -1,7 +1,9 @@
 import jax.numpy as jnp
-from .base.common import _NonlocalSolverBase, _ema, DTYPE
+from .base.common import _NonlocalSolverBase, DTYPE, fixed_quad_jax
 import numpy as np
 from typing import Callable
+from interpax import interp1d
+from jax import lax
 
 try:
     import jax
@@ -65,18 +67,65 @@ class RMSPropMomentum:
     
     
 class NonlocalSolverMomentumRMSProp(_NonlocalSolverBase):
-    def __init__(self, *args, beta: float = 0.99, **kw):
+    r"""
+    θ̇(t) = - ḡ(t) / ( √v̄(t) + ε(t) )
+
+    con  
+      ḡ(t) = dL(θ(t)) + ½λ θ(t)  
+      v̄(t) = ∫₀ᵗ (1-β)/α · e^{-(1-β)(t-tau)/α} · g(tau)² dtau  
+            ≈ fixed_quad_jax(...)
+    """
+    def __init__(self, *args,
+                 beta: float = 0.99,
+                 eps_base: float = 1e-8,
+                 **kw):
         super().__init__(*args, **kw)
-        self.beta = DTYPE(beta)
-        self.eps  = DTYPE(1e-8)
+        self.beta      = DTYPE(beta)
+        self.eps_base  = DTYPE(eps_base)
+        self.lam       = (1. - self.beta) / self.alpha
 
     def _build_stats(self, y):
+        if self.verbose:
+            jax.debug.print("¿NaNs en y?: {}", jnp.isnan(y).any())
+
         interp = self._interp(y)
-        g      = jax.vmap(lambda τ: self.dL(interp(τ))
-                        + 0.5 * self.lambda_ * interp(τ))(self.t)
-        v_sqrt = jnp.sqrt(_ema(self.beta, g*g))
-        return (y, g, v_sqrt)          
+        t_vec = self.t
+        lam   = self.lam
+        nGL   = int(1e3)
+
+        def g_fun(tau):
+            return self.dL(interp(tau)) + 0.5*self.lambda_ * interp(tau)
+
+        @jax.jit
+        def _v_single(t):
+            def _compute(_t):
+                ub = _t + self.alpha
+                ker = lambda tau: jnp.exp(-lam * (ub - tau))
+                f_v = lambda tau: lam * ker(tau) * g_fun(tau)**2
+                v_k = fixed_quad_jax(f_v, 1e-12, ub, nGL, verbose=self.verbose)
+                if self.verbose:
+                    jax.debug.print("step values → nGL ={}  t={}  v={}", nGL, t, v_k)
+                return v_k
+            return lax.cond(t < 1e-12, lambda _: DTYPE(0.), _compute, t)
+
+        # vectorizado sobre la malla
+        g     = jax.vmap(g_fun)(t_vec)
+        v     = jax.vmap(_v_single)(t_vec)
+
+        if self.verbose:                             
+            # imprime 3 primeros y el último punto como muestra
+            jax.debug.print("g[0]={:.3e}, v[0]={:.3e}", g[0], v[0])
+            jax.debug.print("g[1]={:.3e}, v[1]={:.3e}", g[1], v[1])
+            jax.debug.print("g[-1]={:.3e}, g[-1]={:.3e}", g[-1], v[-1])
+
+        self._last_v = jnp.stack((t_vec, v), axis=1)
+
+        # devuelve stats: y, g_vector, √v
+        return (y, g, jnp.sqrt(v))
 
     def _rhs(self, t, y_prev, idx, y_fix, g, v_sqrt):
-        y_val = interp1d(t, self.t, y_fix, method="cubic")
-        return self.f(t, y_val) - g[idx] / (v_sqrt[idx] + self.eps)
+        """ θ̇_i(t) = - g_i(t) / ( √v_i(t) + ε ) """
+        y_val = interp1d(t, self.t, y_fix, method="cubic", extrap=True)
+        denom = v_sqrt[idx] + self.eps_base
+        return self.f(t, y_val) - g[idx] / denom
+    
