@@ -1,9 +1,11 @@
 import jax.numpy as jnp
-from .base.common import _NonlocalSolverBase, DTYPE
+from jax import lax
+import jax
+from .base.common import _NonlocalSolverBase, DTYPE, fixed_quad_jax
 import numpy as np
+from interpax import interp1d
 from typing import Callable
-
-
+from functools import partial
 
 class AdaGrad:
     def __init__(self, dL: Callable, lr: float = 0.01, epsilon: float = 1e-8, lr_decay: float = 0,
@@ -56,33 +58,83 @@ class AdaGrad:
 
         return self.theta_result, self.accumulated_gradients_result, self.iteration
     
+def chunked_vmap(fn, chunk_size: int):
+    """
+    Aplica fn sobre el primer eje de x en bloques de chunk_size, reduciendo
+    pico de memoria. fn debe aceptar (x_i) y devolver y_i.
+    """
+    @partial(jax.jit, static_argnames=('chunk_size',))
+    def _apply(x, chunk_size=chunk_size):
+        N = x.shape[0]
+        pad = (-N) % chunk_size
+        # Relleno con el último valor para igualar tamaños
+        pad_width = ((0, pad),) + ((0, 0),) * (x.ndim - 1)
+        x_pad = jnp.pad(x, pad_width, mode='edge')
+        x_mat = x_pad.reshape((-1, chunk_size) + x.shape[1:])  # (num_chunks, chunk, ...)
+
+        # Cuerpo por chunk: vmap sobre el chunk
+        def per_chunk(x_chunk):
+            return jax.vmap(fn)(x_chunk)
+
+        y_mat = lax.map(per_chunk, x_mat)  # (num_chunks, chunk, ...)
+        # Deshacer reshape y quitar padding
+        y_pad = y_mat.reshape((x_pad.shape[0],) + y_mat.shape[2:])
+        return y_pad[:N]
+
+    return _apply
+    
 
 class NonlocalSolverAdaGrad(_NonlocalSolverBase):
-    def __init__(self, *args, lr_decay: float = 0.0, **kw):
+    r"""
+    θ̇(t) = - α(t) · g(t) / ( √G(t+α) + ε )
+
+    con
+      g(t)   = ∂f(θ(t)) + ½λ θ(t)
+      G(t+α) = (1/α) ∫₀^{t+α} g(tau)² dtau      ← factor 1/α
+      α(t)   = 1 / (1 + (lr_decay/α)·t)
+    """
+    def __init__(self, *args, lr_decay: float = 0.0, eps_base: float = 1e-8, **kw):
         super().__init__(*args, **kw)
         self.lr_decay = DTYPE(lr_decay)
-        self.eps      = DTYPE(1e-8)
-        self._alpha_t = lambda t: 1. / (1. + t * (self.lr_decay / self.alpha))
+        self.eps_base = DTYPE(eps_base)
+        self.chunk_size = 512
+        self.nGL        = int(1e3)
 
     def _build_stats(self, y):
+        if self.verbose:
+            jax.debug.print("¿NaNs en y?: {}", jnp.isnan(y).any())
+
         interp = self._interp(y)
-        g      = jax.vmap(lambda t: self.dL(interp(τ)) + 0.5 * self.lambda_ * interp(t))(self.t)
-        G       = jnp.cumsum(g**2)
+        t_vec  = self.t
+        lam    = 1. / self.alpha
 
-        G_shift = jnp.concatenate([G[1:], G[-1:]]) # último valor repetido
-        G_sqrt  = jnp.sqrt(G_shift)
+        def g_fun(tau):
+            return self.dL(interp(tau)) + 0.5 * self.lambda_ * interp(tau)
+        
+        @jax.jit
+        def _G_single(t):
+            ub = t + self.alpha
+            def compute(upper):
+                integrand = lambda tau: g_fun(tau)**2
+                return lam * fixed_quad_jax(integrand, 1e-12, upper, self.nGL, verbose=self.verbose)     
+            return lax.cond(t < 1e-12, lambda _: DTYPE(0.), compute, ub)
 
-        a_t = jax.vmap(self._alpha_t)(self.t)
 
-        self._last_G = jnp.stack((self.t, G), axis=1) 
+        g = jax.vmap(g_fun)(t_vec)
+        G = chunked_vmap(_G_single, self.chunk_size)(t_vec)
+        G_sqrt = jnp.sqrt(G)
 
-        return (y, g, G_sqrt, jax.vmap(self._alpha_t)(self.t))
+        if self.verbose:                             
+            # imprime 3 primeros y el último punto como muestra
+            jax.debug.print("g[0]={:.3e}, G[0]={:.3e}", g[0], G[0])
+            jax.debug.print("g[1]={:.3e}, G[1]={:.3e}", g[1], G[1])
+            jax.debug.print("g[-1]={:.3e}, G[-1]={:.3e}", g[-1], G[-1])
 
-    def _rhs(self, t, y_prev, idx, y_fix, g, G_sqrt, a_t):
-        """
-        θ̇(t) = - α(t) · g(t) / ( √G(t+α) + ε )
-        """
-        y_val = interp1d(t, self.t, y_fix, method="cubic")
-        denom = G_sqrt[idx] + self.eps
-        return self.f(t, y_val) - a_t[idx] * g[idx] / denom
+        self._last_G = jnp.stack((t_vec, G), axis=1)
+        return (y, g, G_sqrt)
+
+    def _rhs(self, t, y_prev, idx, y_fix, g, G_sqrt):
+        y_val = interp1d(t, self.t, y_fix, method="cubic", extrap=True)
+        denom = G_sqrt[idx] + self.eps_base
+        return self.f(t, y_val) - g[idx] / denom
     

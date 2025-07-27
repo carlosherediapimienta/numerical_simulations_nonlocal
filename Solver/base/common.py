@@ -81,7 +81,7 @@ class _NonlocalSolverBase:
         self._max_inc_hit  = False
 
         self.global_tol    = 1e-4
-        self.max_iteration = int(1e10)
+        self.max_iteration = int(3e3)
 
     # ---------- helpers -------------------------------------------------
     def _interp(self, y: jnp.ndarray):

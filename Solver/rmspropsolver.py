@@ -75,10 +75,7 @@ class NonlocalSolverMomentumRMSProp(_NonlocalSolverBase):
       v̄(t) = ∫₀ᵗ (1-β)/α · e^{-(1-β)(t-tau)/α} · g(tau)² dtau  
             ≈ fixed_quad_jax(...)
     """
-    def __init__(self, *args,
-                 beta: float = 0.99,
-                 eps_base: float = 1e-8,
-                 **kw):
+    def __init__(self, *args, beta: float = 0.99, eps_base: float = 1e-8,**kw):
         super().__init__(*args, **kw)
         self.beta      = DTYPE(beta)
         self.eps_base  = DTYPE(eps_base)
@@ -116,7 +113,7 @@ class NonlocalSolverMomentumRMSProp(_NonlocalSolverBase):
             # imprime 3 primeros y el último punto como muestra
             jax.debug.print("g[0]={:.3e}, v[0]={:.3e}", g[0], v[0])
             jax.debug.print("g[1]={:.3e}, v[1]={:.3e}", g[1], v[1])
-            jax.debug.print("g[-1]={:.3e}, g[-1]={:.3e}", g[-1], v[-1])
+            jax.debug.print("g[-1]={:.3e}, v[-1]={:.3e}", g[-1], v[-1])
 
         self._last_v = jnp.stack((t_vec, v), axis=1)
 
