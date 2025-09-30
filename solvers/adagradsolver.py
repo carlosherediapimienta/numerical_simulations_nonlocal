@@ -16,7 +16,7 @@ class AdaGrad:
     dL : Callable
         Gradient function dL(theta). Should return the derivative wrt theta.
     lr : float
-        Base learning rate (eta).
+        Base learning rate (alpha).
     epsilon : float
         Small constant added to the denominator for numerical stability.
     lr_decay : float
@@ -159,7 +159,7 @@ class NonlocalSolverAdaGrad(_NonlocalSolverBase):
     -----
     - Inherits time-stepping / relaxation scaffolding from `_NonlocalSolverBase`.
     - Builds a cubic interpolant over the current iterate y(t) to evaluate
-      nonlocal terms at arbitrary τ during quadrature.
+      nonlocal terms at arbitrary tau during quadrature.
     - G(t+alpha) is computed by Gauss-Legendre quadrature via `fixed_quad_jax`.
     """
     def __init__(self, *args, lr_decay: float = 0.0, eps_base: float = 1e-8, **kw):
@@ -231,11 +231,11 @@ class NonlocalSolverAdaGrad(_NonlocalSolverBase):
         t : DTYPE
             Current time.
         y_prev : DTYPE
-            Previous value (unused here; kept for signature compatibility).
+            Previous value .
         idx : int
             Index of `t` on the time grid.
         y_fix : jnp.ndarray
-            Current iterate y(t) (fixed during this sweep).
+            Current iterate y(t) .
         g : jnp.ndarray
             Samples of g(t) along the time grid.
         G_sqrt : jnp.ndarray
