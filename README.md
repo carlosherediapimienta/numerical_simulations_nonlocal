@@ -4,25 +4,58 @@ This repository is associated with the article _"Modeling AdaGrad, RMSProp, and 
 
 ## Repository Structure
 
-The repository is primarily organized around the `Solver` folder, which contains two Python files:
+The repository is organized into two main components:
 
-1. **`NonLocalSolver.py`**: This file contains the implementations for solving integro-differential equations using IDESolver Method.
-2. **`Solver.py`**: This file includes the algorithms for AdaGrad, Adam, and RMSProp implemented from scratch.
+### 1. **`solvers/` Package**
 
-Additionally, the repository includes Jupyter notebooks that reproduce all the results presented in the article, allowing users to explore and verify the findings interactively.
+Contains modular Python implementations of both discrete and continuous-time optimization algorithms:
 
-## Classes Overview
+- **`adagradsolver.py`**: Implements `AdaGrad` (discrete optimizer) and `NonlocalSolverAdaGrad` (continuous nonlocal dynamics).
+- **`adamsolver.py`**: Implements `AdamMomentum` (discrete optimizer) and `NonlocalSolverMomentumAdam` (continuous nonlocal dynamics).
+- **`rmspropsolver.py`**: Implements `RMSPropMomentum` (discrete optimizer) and `NonlocalSolverMomentumRMSProp` (continuous nonlocal dynamics).
+- **`base/common.py`**: Contains the shared base class `_NonlocalSolverBase` and common utilities including:
+  - `fixed_quad_jax`: Fixed-order Gauss-Legendre quadrature for numerical integration
+  - Time grid construction and explicit Euler time-stepping
+  - Fixed-point relaxation with under-relaxation (smoothing)
+  - Global error monitoring and convergence control
 
-All classes (`NonlocalSolverMomentumAdam`, `NonlocalSolverMomentumRMSProp`, `NonlocalSolverAdaGrad`) share a similar structure to handle the dynamics of optimization algorithms as nonlocal models:
+### 2. **`simulations/` Folder**
 
-- **`__init__`**: Initializes solver parameters (dynamics function, gradient, time span, initial conditions, specific optimization parameters, etc.).
-- **`__solve_ode__`**: Solves the ordinary differential equation using a numerical method.
-- **`__rhs_with_integral_part__`**: Computes the right-hand side of the ODE, including integral components.
-- **`solve`**: Runs the solution algorithm, managing convergence and error control.
+Contains Jupyter notebooks that reproduce all results from the article:
 
-### Pseudocode for `solve` Function
+**Convex Cases:**
+- `Numerical_Simulations_AdaGrad.ipynb`
+- `Numerical_Simulations_Adam.ipynb`
+- `Numerical_Simulations_RMSPROP.ipynb`
 
-The `solve` function implements an iterative approach to solve the integro-differential equation while ensuring convergence and managing errors.
+**Non-Convex Cases:**
+- `Numerical_Simulations_AdaGrad_Nonconvex.ipynb`
+- `Numerical_Simulations_Adam_Nonconvex.ipynb`
+- `Numerical_Simulations_RMSPROP_Nonconvex.ipynb`
+
+**Generated Figures:**
+- `figures/`: Contains 84 PNG images generated from simulation results
+
+## Solver Architecture
+
+### Discrete Optimizers
+
+Each algorithm (`AdaGrad`, `AdamMomentum`, `RMSPropMomentum`) provides a from-scratch implementation of the discrete optimization algorithm with:
+
+- **`__init__`**: Initializes optimizer parameters (learning rate, momentum coefficients, epsilon, weight decay, L2 regularization, epochs).
+- **`solve(theta_initial)`**: Runs the optimization algorithm for a specified number of epochs, returning the trajectory and accumulated statistics.
+
+### Continuous Nonlocal Solvers
+
+All continuous solvers (`NonlocalSolverAdaGrad`, `NonlocalSolverMomentumAdam`, `NonlocalSolverMomentumRMSProp`) inherit from `_NonlocalSolverBase` and implement:
+
+- **`_build_stats(y)`**: Precomputes nonlocal statistics (integrals, moments) needed for the right-hand side evaluation.
+- **`_rhs(t, y_prev, idx, *stats)`**: Computes the right-hand side of the integro-differential equation at time `t`.
+- **`solve()`**: Runs the fixed-point iteration with under-relaxation to solve the nonlocal dynamics.
+
+### Algorithm for Nonlocal Solvers (`solve` Method)
+
+The `solve` method implements a fixed-point outer loop with under-relaxation:
 
 ```plaintext
 Initialize iteration count to 0
@@ -53,22 +86,71 @@ Return time values and corresponding solution y
 
 ## Libraries Used
 
-- `scipy.integrate.fixed_quad`: Utilized for numerical integration with fixed quadrature.
-- `scipy.interpolate.interp1d`: Provides interpolation for constructing smooth functions.
-- `concurrent.futures.ThreadPoolExecutor`: Manages parallel computations to speed up integral calculations.
-- `numba.njit`: JIT compiler for optimizing performance-critical functions.
-- `numpy`: Fundamental package for numerical computations in Python.
+- **`jax` / `jax.numpy`**: High-performance numerical computing with automatic differentiation and JIT compilation.
+- **`interpax`**: JAX-compatible interpolation library for cubic interpolation.
+- **`numpy`**: Fundamental package for numerical computations (used for Gauss-Legendre node/weight computation).
+- **`plotly`**: Interactive visualization library for generating figures.
+- **`sklearn`**: Used for parameter grid generation in simulations.
 
 ## Objective
 
 The goal of this repository is to explore and model the dynamics of popular optimization algorithms (AdaGrad, RMSProp, and Adam) as nonlocal models. By leveraging integro-differential equations, we aim to provide deeper insights into how these algorithms operate and optimize in high-dimensional spaces.
 
+## Installation and Dependencies
+
+### Requirements
+
+- Python 3.8+
+- JAX (with CPU or GPU support)
+- interpax
+- numpy
+- plotly
+- scikit-learn
+- jupyter
+
+### Installation
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd numerical_simulations_nonlocal
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install jax jaxlib interpax numpy plotly scikit-learn jupyter
+   ```
+
+   For GPU support, follow [JAX installation instructions](https://github.com/google/jax#installation).
+
 ## How to Use
 
-1. Clone the repository to your local machine.
-2. Navigate to the `Solver` folder.
-3. Run the appropriate Python file (`NonLocalSolver.py` or `Solver.py`) to explore different algorithms and their dynamics.
-4. Open the Jupyter notebooks provided to reproduce the results from the article and gain a deeper understanding of the simulations.
+### Running Simulations
+
+1. **Navigate to the simulations folder:**
+   ```bash
+   cd simulations
+   ```
+
+2. **Open a Jupyter notebook:**
+   ```bash
+   jupyter notebook
+   ```
+
+3. **Select a simulation notebook:**
+   - For convex problems: `Numerical_Simulations_[Algorithm].ipynb`
+   - For non-convex problems: `Numerical_Simulations_[Algorithm]_Nonconvex.ipynb`
+   
+   where `[Algorithm]` is one of: `AdaGrad`, `Adam`, or `RMSPROP`.
+
+4. **Run all cells** to reproduce the results and generate figures.
+
+
+## Additional Files
+
+- **`checks_pytorch/`**: Contains validation notebooks comparing JAX implementations with PyTorch.
+- **`LICENSE`**: MIT License for the project.
+
 
 ## License
 
