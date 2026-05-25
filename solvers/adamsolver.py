@@ -223,11 +223,12 @@ class NonlocalSolverMomentumAdam(_NonlocalSolverBase):
             For very small t, short-circuit to (0, 0) to avoid boundary issues.
             """
             def _compute(_t):
-                ker = lambda tau: jnp.exp(-lam * (_t - tau))
+                ub = _t + self.alpha
+                ker = lambda tau: jnp.exp(-lam * (ub - tau))
                 f_m = lambda tau: lam * ker(tau) * g_fun(tau)
                 f_v = lambda tau: lam * ker(tau) * g_fun(tau)**2
-                m_k = fixed_quad_jax(f_m, 1e-12, _t, nGL, verbose=self.verbose)
-                v_k = fixed_quad_jax(f_v, 1e-12, _t, nGL, verbose=self.verbose)
+                m_k = fixed_quad_jax(f_m, 1e-12, ub, nGL, verbose=self.verbose)
+                v_k = fixed_quad_jax(f_v, 1e-12, ub, nGL, verbose=self.verbose)
                 if self.verbose:
                     jax.debug.print("step values → nGL ={}  t={}  m={}  v={}", nGL, t, m_k, v_k)
                 return m_k, v_k
@@ -248,8 +249,8 @@ class NonlocalSolverMomentumAdam(_NonlocalSolverBase):
         self._last_v = jnp.stack((self.t, v), axis=1)
 
         v_sqrt = jnp.sqrt(v)
-        a_t    = jax.vmap(self._alpha_t)(self.t)     # bias-correction factor
-        eps_t  = jax.vmap(self._eps_t)(self.t)       # scaled epsilon
+        a_t = jax.vmap(self._alpha_t)(self.t + self.alpha)     # bias-correction factor
+        eps_t = jax.vmap(self._eps_t)(self.t + self.alpha)       # scaled epsilon
 
         return (y, m, v_sqrt, a_t, eps_t)
 

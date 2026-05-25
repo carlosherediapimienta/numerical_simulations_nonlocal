@@ -1,0 +1,13 @@
+# Core
+numpy==2.2.6
+jax[cuda12]==0.6.2
+interpax==0.3.14
+plotly==5.24.1
+scikit-learn==1.5.2
+jupyter==1.1.1
+ipykernel==6.29.5
+
+# Solo para checks_pytorch/Numerical_Simulation_with_Torch.ipynb
+matplotlib==3.9.2
+torch==2.12.0
+kaleido==0.2.1
